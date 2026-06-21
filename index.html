@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Physix Simulator</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: #100f0d;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    width: 100vw; height: 100vh;
+    overflow: hidden;
+    font-family: "Courier New", Consolas, monospace;
+    touch-action: none;
+    overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+  }
+  #wrap {
+    box-shadow: 0 0 0 2px #3a342a, 0 20px 60px rgba(0,0,0,0.6);
+    touch-action: none;
+    line-height: 0;
+  }
+  canvas {
+    display: block;
+    image-rendering: pixelated;
+    cursor: crosshair;
+    touch-action: none;
+  }
+  footer {
+    width: 100vw;
+    height: 26px;
+    flex: 0 0 26px;
+    background: #1a1812;
+    border-top: 1px solid #3a342a;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px;
+    color: #8a8270;
+    letter-spacing: 0.5px;
+  }
+  footer a {
+    color: #c9a96a;
+    text-decoration: none;
+    margin-left: 6px;
+    border-bottom: 1px dotted #c9a96a;
+  }
+  footer a:hover { color: #e8c98a; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game"></canvas>
+</div>
+<footer>
+  PhysixSim <a href="https://beasty-mod.github.io/PhysixSim/help" target="_blank" rel="noopener">Help</a>
+</footer>
+<a id="saveLink" style="display:none;"></a>
+<script>
+// ================= CONFIG =================
+const GRID_SIZE = 96;
+const CELL_SIZE = 7;
+const CANVAS_SIZE = GRID_SIZE * CELL_SIZE;
+const UI_HEIGHT = 152;
+
+const WIDTH = CANVAS_SIZE;
+const HEIGHT = CANVAS_SIZE + UI_HEIGHT;
+
+const canvas = document.getElementById('game');
+canvas.width = WIDTH; canvas.height = HEIGHT;
+const ctx = canvas.getContext('2d');
+
+// ================= RESPONSIVE FIT =================
+function fitCanvas() {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight - 26; // leave room for the footer bar
+  const scale = Math.min(vw / WIDTH, vh / HEIGHT);
+  canvas.style.width = Math.floor(WIDTH * scale) + 'px';
+  canvas.style.height = Math.floor(HEIGHT * scale) + 'px';
+}
+window.addEventListener('resize', fitCanvas);
+window.addEventListener('orientationchange', fitCanvas);
+fitCanvas();
+
+// Prevent pinch-zoom / double-tap-zoom gestures on mobile
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('gesturechange', e => e.preventDefault());
+document.addEventListener('dblclick', e => e.preventDefault());
+let lastTouchEnd = 0;
+document.addEventListener('touchend', e => {
+  const now = Date.now();
+  if (now - lastTouchEnd <= 300) e.preventDefault();
+  lastTouchEnd = now;
+}, { passive: false });
+document.addEventListener('touchmove', e => { if (e.scale && e.scale !== 1) e.preventDefault(); }, { passive: false });
+
+// ================= ELEMENTS =================
+const EMPTY=0, SAND=1, METAL=2, WATER=3, LAVA=4, COBBLE=5, OBSIDIAN=6,
+      FIRE=7, PLANT=8, WOOD=9, ACID=10, ICE=11, STEAM=12, OIL=13,
+      SMOKE=14, GUNPOWDER=15, ASH=16, SNOW=17, BOMB=18;
+
+const ELEMENT_NAMES = {
+  [SAND]:"Sand", [METAL]:"Metal", [WATER]:"Water", [LAVA]:"Lava",
+  [COBBLE]:"Cobblestone", [OBSIDIAN]:"Obsidian", [FIRE]:"Fire",
+  [PLANT]:"Plant", [WOOD]:"Wood", [ACID]:"Acid", [ICE]:"Ice",
+  [OIL]:"Oil", [GUNPOWDER]:"Gunpowder", [EMPTY]:"Eraser",
+  [SNOW]:"Snow", [BOMB]:"Bomb",
+};
+
+// Toolbar order: original elements first (unchanged), new ones appended at the end
+const TOOLBAR = [SAND, METAL, WATER, LAVA, COBBLE, OBSIDIAN, FIRE,
+                 PLANT, WOOD, ACID, ICE, OIL, GUNPOWDER, EMPTY,
+                 BOMB, SNOW];
+
+const HOTKEYS = {
+  "1":SAND, "2":METAL, "3":WATER, "4":EMPTY, "5":LAVA,
+  "6":COBBLE, "7":OBSIDIAN, "8":FIRE, "9":PLANT, "0":WOOD,
+  "b":BOMB,
+};
+
+// ================= COLORS =================
+const BG_COLOR = "rgb(20,19,17)";
+const GRID_COLOR = "rgb(42,40,34)";
+const PANEL_COLOR = "rgb(26,24,19)";
+const ACCENT = "rgb(201,169,106)";
+
+const BASE_COLORS = {
+  [SAND]: [203,189,146],
+  [METAL]: [150,150,158],
+  [WATER]: [28,130,236],
+  [LAVA]: [255,90,20],
+  [COBBLE]: [120,120,120],
+  [OBSIDIAN]: [35,10,50],
+  [FIRE]: [255,140,30],
+  [PLANT]: [50,160,60],
+  [WOOD]: [110,70,35],
+  [ACID]: [140,230,50],
+  [ICE]: [180,225,245],
+  [STEAM]: [220,220,225],
+  [OIL]: [50,35,20],
+  [SMOKE]: [150,150,155],
+  [GUNPOWDER]: [60,60,65],
+  [ASH]: [90,85,80],
+  [SNOW]: [240,245,250],
+  [BOMB]: [170,40,40],
+};
+
+const DENSITY = {
+  [EMPTY]:0, [STEAM]:1, [SMOKE]:1, [FIRE]:2, [GUNPOWDER]:5,
+  [OIL]:4, [WATER]:5, [ACID]:5, [SAND]:6, [ASH]:3, [ICE]:7,
+  [PLANT]:99, [WOOD]:99, [METAL]:99, [COBBLE]:99, [OBSIDIAN]:99,
+  [LAVA]:8, [SNOW]:3, [BOMB]:10,
+};
+
+const POWDERS = new Set([SAND, GUNPOWDER, ASH, SNOW]);
+const LIQUIDS = new Set([WATER, LAVA, ACID, OIL]);
+const GASES = new Set([STEAM, SMOKE]);
+const SOLIDS = new Set([METAL, COBBLE, OBSIDIAN, WOOD, ICE]);
+const FLAMMABLE = new Set([PLANT, WOOD, OIL, GUNPOWDER]);
+
+// ================= GRID =================
+function make2D(fill) {
+  return Array.from({length: GRID_SIZE}, () => Array(GRID_SIZE).fill(fill));
+}
+let grid = make2D(EMPTY);
+let colors = make2D(null);
+let life = make2D(0);
+let updated = make2D(false);
+let burning = make2D(false);
+let burnTime = make2D(0);
+let burnTotal = make2D(0);
+
+// ================= STATE =================
+let current_element = SAND;
+let grid_visible = false;
+let size = 3;
+let paused = false;
+let brush_round = true;
+let particles = []; // {x,y,vx,vy,life,col}
+let frame = 0;
+let weather = "none"; // none | rain | snow
+let weatherLocked = false; // when true, automatic cycling is paused and weather stays as selected
+function randomWeatherInterval() {
+  // realistic-feeling weather cycle: 3 to 5 minutes at ~60fps
+  return Math.floor((180 + Math.random() * 120) * 60);
+}
+let weatherTimer = randomWeatherInterval();
+
+let lightningFlash = 0;       // frames remaining of bright flash
+let lightningBoltX = -1;      // x column of current bolt (for drawing)
+let lightningCooldown = 240 + Math.random() * 300; // frames until next possible strike
+let windPhase = 0;
+let wind = 0; // current horizontal wind strength, -1..1
+
+let shakeMag = 0;
+let shakeFrames = 0;
+
+// ================= MISSIONS =================
+let missionsVisible = true;
+const missionStats = {
+  fireStarted: 0, obsidian: 0, plantsGrown: 0, iceMelted: 0,
+  explosions: 0, bombsDetonated: 0,
+};
+const MISSIONS = [
+  { id: "spark",    label: "Start a fire",        check: s => s.fireStarted >= 1 },
+  { id: "forge",    label: "Forge obsidian",      check: s => s.obsidian >= 1 },
+  { id: "bloom",    label: "Grow a plant 3 times", check: s => s.plantsGrown >= 3 },
+  { id: "thaw",     label: "Melt some ice",       check: s => s.iceMelted >= 1 },
+  { id: "boom",     label: "Cause an explosion",  check: s => s.explosions >= 1 },
+  { id: "detonate", label: "Detonate a bomb",     check: s => s.bombsDetonated >= 1 },
+];
+const completedMissions = new Set();
+let toasts = []; // {text, life, maxLife}
+
+function pushToast(text) {
+  toasts.push({ text, life: 150, maxLife: 150 });
+}
+
+function checkMissions() {
+  for (const m of MISSIONS) {
+    if (completedMissions.has(m.id)) continue;
+    if (m.check(missionStats)) {
+      completedMissions.add(m.id);
+      pushToast(`Mission complete: ${m.label}`);
+      for (let i = 0; i < 6; i++) {
+        addSpark(Math.floor(Math.random()*GRID_SIZE), 2, [255, 215, 130], 1);
+      }
+    }
+  }
+}
+
+// FPS tracking
+let lastTime = performance.now();
+let fps = 60;
+
+// ================= HELPERS =================
+function inBounds(x, y) { return x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE; }
+
+function scatter(color, amt = 12) {
+  return color.map(c => Math.max(0, Math.min(255, c + (Math.floor(Math.random() * (amt*2+1)) - amt))));
+}
+
+function clearCell(x, y) {
+  grid[y][x] = EMPTY;
+  colors[y][x] = null;
+  life[y][x] = 0;
+  burning[y][x] = false;
+  burnTime[y][x] = 0;
+  burnTotal[y][x] = 0;
+}
+
+function place(x, y, e, lifeval = 0) {
+  grid[y][x] = e;
+  life[y][x] = lifeval;
+  burning[y][x] = false;
+  burnTime[y][x] = 0;
+  burnTotal[y][x] = 0;
+  if (e !== EMPTY) colors[y][x] = scatter(BASE_COLORS[e]);
+  else colors[y][x] = null;
+  if (e === FIRE) missionStats.fireStarted++;
+}
+
+function swap(x1, y1, x2, y2) {
+  let g = grid[y1][x1]; grid[y1][x1] = grid[y2][x2]; grid[y2][x2] = g;
+  let c = colors[y1][x1]; colors[y1][x1] = colors[y2][x2]; colors[y2][x2] = c;
+  let l = life[y1][x1]; life[y1][x1] = life[y2][x2]; life[y2][x2] = l;
+  let b = burning[y1][x1]; burning[y1][x1] = burning[y2][x2]; burning[y2][x2] = b;
+  let bt = burnTime[y1][x1]; burnTime[y1][x1] = burnTime[y2][x2]; burnTime[y2][x2] = bt;
+  let btt = burnTotal[y1][x1]; burnTotal[y1][x1] = burnTotal[y2][x2]; burnTotal[y2][x2] = btt;
+  updated[y2][x2] = true;
+}
+
+function addSpark(x, y, color, n = 1) {
+  for (let i = 0; i < n; i++) {
+    particles.push({
+      x: x * CELL_SIZE + CELL_SIZE / 2, y: y * CELL_SIZE + CELL_SIZE / 2,
+      vx: (Math.random() * 3 - 1.5), vy: -(Math.random() * 2 + 0.5),
+      life: Math.floor(Math.random() * 12) + 10, col: color
+    });
+  }
+}
+
+function neighbors4(x, y) { return [[x,y-1],[x,y+1],[x-1,y],[x+1,y]]; }
+
+function heavier(a, b) { return (DENSITY[a]||0) > (DENSITY[b]||0); }
+
+function passable(e) { return e === EMPTY || GASES.has(e); }
+
+function triggerShake(mag, frames) {
+  shakeMag = Math.max(shakeMag, mag);
+  shakeFrames = Math.max(shakeFrames, frames);
+}
+
+// ================= PHYSICS =================
+function updatePowder(x, y, elem) {
+  const below = inBounds(x, y+1) ? grid[y+1][x] : null;
+  if (inBounds(x, y+1) && (passable(below) || (LIQUIDS.has(below) && heavier(elem, below)))) {
+    if (LIQUIDS.has(below)) place(x, y, below);
+    swap(x, y, x, y+1);
+    return;
+  }
+  const order = Math.random() < 0.5 ? [-1,1] : [1,-1];
+  for (const dx of order) {
+    const nx = x + dx;
+    if (inBounds(nx, y+1) && passable(grid[y+1][nx])) { swap(x, y, nx, y+1); return; }
+  }
+}
+
+function updateLiquid(x, y, elem) {
+  if (inBounds(x, y+1) && passable(grid[y+1][x])) { swap(x, y, x, y+1); return; }
+  const order = Math.random() < 0.5 ? [-1,1] : [1,-1];
+  for (const dx of order) {
+    const nx = x + dx;
+    if (inBounds(nx, y+1) && passable(grid[y+1][nx])) { swap(x, y, nx, y+1); return; }
+  }
+  const spread = elem !== LAVA ? 3 : 1;
+  for (const dx of order) {
+    for (let s = 1; s <= spread; s++) {
+      const nx = x + dx * s;
+      if (!inBounds(nx, y) || !passable(grid[y][nx])) break;
+      if (s === spread || Math.random() < 0.5) { swap(x, y, nx, y); return; }
+    }
+  }
+}
+
+function updateGas(x, y, elem) {
+  life[y][x] += 1;
+  const maxLife = elem === STEAM ? 90 : 140;
+  if (life[y][x] > maxLife && Math.random() < 0.05) { clearCell(x, y); return; }
+  const choices = [];
+  if (inBounds(x, y-1) && grid[y-1][x] === EMPTY) choices.push([x, y-1]);
+  for (const dx of [-1, 1]) {
+    if (inBounds(x+dx, y) && grid[y][x+dx] === EMPTY) choices.push([x+dx, y]);
+  }
+  if (choices.length && Math.random() < 0.8) {
+    const [nx, ny] = choices[Math.floor(Math.random() * choices.length)];
+    swap(x, y, nx, ny);
+  }
+}
+
+const BURN_DURATION = { [WOOD]:110, [PLANT]:45, [OIL]:30, [GUNPOWDER]:10 };
+
+function startBurning(x, y) {
+  if (burning[y][x] || !FLAMMABLE.has(grid[y][x])) return;
+  burning[y][x] = true;
+  const dur = BURN_DURATION[grid[y][x]] !== undefined ? BURN_DURATION[grid[y][x]] : 50;
+  burnTime[y][x] = dur;
+  burnTotal[y][x] = dur;
+}
+
+function ignite(x, y) {
+  place(x, y, FIRE, Math.floor(Math.random()*26)+20);
+  addSpark(x, y, [255,180,60], 2);
+}
+
+function handleBurning(x, y) {
+  const elem = grid[y][x];
+  if (!FLAMMABLE.has(elem) || !burning[y][x]) { burning[y][x] = false; return; }
+
+  burnTime[y][x] -= 1;
+  const progress = 1 - (burnTime[y][x] / Math.max(1, burnTotal[y][x]));
+  const base = BASE_COLORS[elem];
+  const fireCol = [255,120,30];
+  const t = Math.min(1.0, progress * 1.3);
+  colors[y][x] = [0,1,2].map(i => Math.floor(base[i] + (fireCol[i]-base[i]) * t));
+
+  if (inBounds(x, y-1) && grid[y-1][x] === EMPTY && Math.random() < 0.10) {
+    if (Math.random() < 0.5) place(x, y-1, FIRE, Math.floor(Math.random()*9)+8);
+    else place(x, y-1, SMOKE);
+  }
+
+  for (const [nx, ny] of neighbors4(x, y)) {
+    if (inBounds(nx, ny) && FLAMMABLE.has(grid[ny][nx]) && !burning[ny][nx] && Math.random() < 0.05) {
+      startBurning(nx, ny);
+    } else if (inBounds(nx, ny) && grid[ny][nx] === WATER) {
+      burning[y][x] = false; burnTime[y][x] = 0; return;
+    }
+  }
+
+  if (burnTime[y][x] <= 0) {
+    if (elem === GUNPOWDER) {
+      explode(x, y);
+    } else if (elem === OIL) {
+      addSpark(x, y, [255,160,60], 3);
+      if (Math.random() < 0.6) place(x, y, SMOKE); else clearCell(x, y);
+    } else {
+      place(x, y, ASH);
+      if (inBounds(x, y-1) && grid[y-1][x] === EMPTY && Math.random() < 0.4) place(x, y-1, SMOKE);
+    }
+  }
+}
+
+function explode(x, y, radius = 6, shake = 0) {
+  missionStats.explosions++;
+  addSpark(x, y, [255,220,120], 18);
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      const dist = Math.hypot(dx, dy);
+      if (dist > radius) continue;
+      const nx = x+dx, ny = y+dy;
+      if (!inBounds(nx, ny)) continue;
+      if (Math.random() < (1 - dist/radius) * 0.9) {
+        if (SOLIDS.has(grid[ny][nx]) && grid[ny][nx] !== METAL) clearCell(nx, ny);
+        else if (grid[ny][nx] !== METAL) {
+          if (Math.random() < 0.15) place(nx, ny, FIRE, Math.floor(Math.random()*16)+5);
+          else clearCell(nx, ny);
+        }
+      }
+    }
+  }
+  if (shake > 0) triggerShake(shake, 18);
+}
+
+function updatePlant(x, y) {
+  life[y][x] += 1;
+  let grownNearWater = false;
+  for (const [nx, ny] of neighbors4(x, y)) {
+    if (inBounds(nx, ny) && grid[ny][nx] === WATER && Math.random() < 0.02) grownNearWater = true;
+  }
+  if (grownNearWater && life[y][x] > 8) {
+    const targets = [[x, y-1],[x-1, y-1],[x+1, y-1]];
+    targets.sort(() => Math.random() - 0.5);
+    for (const [nx, ny] of targets) {
+      if (inBounds(nx, ny) && grid[ny][nx] === EMPTY && Math.random() < 0.5) { place(nx, ny, PLANT); missionStats.plantsGrown++; break; }
+    }
+  }
+}
+
+const ACID_LIFESPAN = 300; // ~5 seconds at 60fps before it breaks down
+
+function placeDirtyWater(x, y) {
+  grid[y][x] = WATER;
+  life[y][x] = 0;
+  burning[y][x] = false; burnTime[y][x] = 0; burnTotal[y][x] = 0;
+  colors[y][x] = scatter([95, 112, 78], 10); // murky, decomposed tint
+  addSpark(x, y, [150, 170, 120], 1);
+}
+
+function updateAcid(x, y) {
+  life[y][x] += 1;
+  if (life[y][x] >= ACID_LIFESPAN) { placeDirtyWater(x, y); return; }
+  updateLiquid(x, y, ACID);
+}
+
+function updateIce(x, y) {
+  for (const [nx, ny] of neighbors4(x, y)) {
+    if (inBounds(nx, ny) && (grid[ny][nx] === FIRE || grid[ny][nx] === LAVA)) {
+      grid[y][x] = WATER;
+      colors[y][x] = scatter(BASE_COLORS[WATER]);
+      missionStats.iceMelted++;
+      return;
+    }
+  }
+}
+
+function isHot(x, y) {
+  return inBounds(x,y) && (grid[y][x] === FIRE || grid[y][x] === LAVA || burning[y][x]);
+}
+
+function updateSnow(x, y) {
+  for (const [nx, ny] of neighbors4(x, y)) {
+    if (isHot(nx, ny)) {
+      place(x, y, WATER);
+      addSpark(x, y, [220,230,240], 2);
+      return;
+    }
+  }
+  updatePowder(x, y, SNOW);
+}
+
+function updateBomb(x, y) {
+  for (const [nx, ny] of neighbors4(x, y)) {
+    if (isHot(nx, ny)) {
+      missionStats.bombsDetonated++;
+      explode(x, y, 9, 14);
+      return;
+    }
+  }
+  updatePowder(x, y, BOMB);
+}
+
+function updateWater(x, y) {
+  if (inBounds(x, y+1) && grid[y+1][x] === LAVA) {
+    grid[y][x] = COBBLE; colors[y][x] = scatter(BASE_COLORS[COBBLE], 8); life[y][x] = 0;
+    place(x, y+1, STEAM);
+    addSpark(x, y, [200,200,210], 4);
+    return;
+  }
+  for (const [nx, ny] of neighbors4(x, y)) {
+    if (inBounds(nx, ny) && grid[ny][nx] === LAVA && Math.random() < 0.3) place(nx, ny, STEAM);
+  }
+  updateLiquid(x, y, WATER);
+}
+
+function updateLava(x, y) {
+  if (inBounds(x, y+1) && grid[y+1][x] === WATER) {
+    grid[y][x] = OBSIDIAN; colors[y][x] = scatter(BASE_COLORS[OBSIDIAN], 5); life[y][x] = 0;
+    missionStats.obsidian++;
+    place(x, y+1, STEAM);
+    return;
+  }
+  for (const [nx, ny] of neighbors4(x, y)) {
+    if (!inBounds(nx, ny)) continue;
+    const n = grid[ny][nx];
+    if (FLAMMABLE.has(n) && !burning[ny][nx] && Math.random() < 0.20) {
+      startBurning(nx, ny);
+    } else if (n === WATER) {
+      grid[ny][nx] = OBSIDIAN; colors[ny][nx] = scatter(BASE_COLORS[OBSIDIAN], 5);
+      missionStats.obsidian++;
+    } else if (n === ICE && Math.random() < 0.5) {
+      grid[ny][nx] = WATER; colors[ny][nx] = scatter(BASE_COLORS[WATER]);
+    } else if (n === METAL && Math.random() < 0.01) {
+      colors[ny][nx] = scatter([200,90,40], 10);
+    } else if (n === GUNPOWDER && !burning[ny][nx] && Math.random() < 0.5) {
+      startBurning(nx, ny);
+    } else if (n === BOMB) {
+      missionStats.bombsDetonated++;
+      explode(nx, ny, 9, 14);
+    }
+  }
+  updateLiquid(x, y, LAVA);
+}
+
+function updateOil(x, y) { updateLiquid(x, y, OIL); }
+function updateGunpowder(x, y) { updatePowder(x, y, GUNPOWDER); }
+
+function updateFire(x, y) {
+  life[y][x] -= 1;
+  const flicker = BASE_COLORS[FIRE];
+  colors[y][x] = [
+    Math.min(255, flicker[0] + (Math.floor(Math.random()*21)-10)),
+    Math.max(0, flicker[1] - Math.floor(Math.random()*61)),
+    0
+  ];
+  if (life[y][x] <= 0) {
+    if (Math.random() < 0.5) place(x, y, SMOKE); else clearCell(x, y);
+    return;
+  }
+
+  for (const [nx, ny] of neighbors4(x, y)) {
+    if (!inBounds(nx, ny)) continue;
+    const n = grid[ny][nx];
+    if (FLAMMABLE.has(n) && !burning[ny][nx] && Math.random() < 0.10) {
+      startBurning(nx, ny);
+    } else if (n === WATER) {
+      clearCell(x, y); return;
+    } else if (n === ICE) {
+      grid[ny][nx] = WATER; colors[ny][nx] = scatter(BASE_COLORS[WATER]);
+    } else if (n === GUNPOWDER && !burning[ny][nx] && Math.random() < 0.6) {
+      startBurning(nx, ny);
+    } else if (n === BOMB) {
+      missionStats.bombsDetonated++;
+      explode(nx, ny, 9, 14);
+    }
+  }
+
+  if (inBounds(x, y-1) && grid[y-1][x] === EMPTY && Math.random() < 0.3) swap(x, y, x, y-1);
+}
+
+// ================= UPDATE DISPATCH =================
+const UPDATERS = {
+  [SAND]: (x,y) => updatePowder(x,y,SAND),
+  [ASH]: (x,y) => updatePowder(x,y,ASH),
+  [GUNPOWDER]: updateGunpowder,
+  [WATER]: updateWater,
+  [LAVA]: updateLava,
+  [ACID]: updateAcid,
+  [OIL]: updateOil,
+  [FIRE]: updateFire,
+  [PLANT]: updatePlant,
+  [STEAM]: (x,y) => updateGas(x,y,STEAM),
+  [SMOKE]: (x,y) => updateGas(x,y,SMOKE),
+  [ICE]: updateIce,
+  [SNOW]: updateSnow,
+  [BOMB]: updateBomb,
+};
+
+// ================= WEATHER =================
+function cycleWeather() {
+  const options = ["none", "rain", "snow"];
+  let next;
+  do { next = options[Math.floor(Math.random() * options.length)]; }
+  while (next === weather && options.length > 1);
+  weather = next;
+}
+
+function spawnWeather() {
+  if (weather === "none") return;
+  // gentle, sparse drizzle instead of a downpour
+  const chance = weather === "rain" ? 0.55 : 0.35;
+  if (Math.random() > chance) return;
+  const x = Math.floor(Math.random() * GRID_SIZE);
+  if (grid[0][x] === EMPTY) {
+    if (weather === "rain") place(x, 0, WATER);
+    else if (weather === "snow") place(x, 0, SNOW);
+  }
+}
+
+function maybeStrikeLightning() {
+  if (weather !== "rain") return;
+  lightningCooldown -= 1;
+  if (lightningCooldown <= 0) {
+    lightningCooldown = 300 + Math.random() * 420; // next strike in ~5-12s
+    const x = Math.floor(Math.random() * GRID_SIZE);
+    // find the first solid/flammable surface in this column
+    let hitY = -1;
+    for (let y = 0; y < GRID_SIZE; y++) {
+      if (grid[y][x] !== EMPTY && grid[y][x] !== STEAM && grid[y][x] !== SMOKE) { hitY = y; break; }
+    }
+    lightningFlash = 5;
+    lightningBoltX = x;
+    addSpark(x, Math.max(0, hitY), [220, 235, 255], 14);
+    if (hitY >= 0 && FLAMMABLE.has(grid[hitY][x]) && !burning[hitY][x] && Math.random() < 0.6) {
+      startBurning(x, hitY);
+    } else if (hitY >= 0 && grid[hitY][x] === GUNPOWDER) {
+      explode(x, hitY, 7, 8);
+    }
+  }
+}
+
+// ================= DRAW =================
+const TOOLBAR_RECTS = {};
+const WEATHER_RECTS = {};
+const HOLD_RECT = { x:0, y:0, w:0, h:0 };
+const CYCLE_RECT = { x:0, y:0, w:0, h:0 };
+
+function draw() {
+  ctx.save();
+  if (shakeFrames > 0) {
+    const dx = (Math.random()*2-1) * shakeMag;
+    const dy = (Math.random()*2-1) * shakeMag;
+    ctx.translate(dx, dy);
+    shakeFrames--; shakeMag *= 0.92;
+    if (shakeFrames <= 0) shakeMag = 0;
+  }
+
+  ctx.fillStyle = BG_COLOR;
+  ctx.fillRect(-20, -20, WIDTH+40, CANVAS_SIZE+40);
+
+  const glowCells = [];
+  for (let y = 0; y < GRID_SIZE; y++) {
+    for (let x = 0; x < GRID_SIZE; x++) {
+      if (grid[y][x] !== EMPTY) {
+        const c = colors[y][x];
+        ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+        ctx.fillRect(x*CELL_SIZE, y*CELL_SIZE, CELL_SIZE, CELL_SIZE);
+        if (grid[y][x] === FIRE && (x+y) % 3 === 0) glowCells.push([x, y]);
+      }
+    }
+  }
+
+  // soft warm glow around fire (sampled, additive blend, cheap)
+  if (glowCells.length) {
+    ctx.globalCompositeOperation = 'lighter';
+    for (const [gx, gy] of glowCells) {
+      const cx = gx*CELL_SIZE + CELL_SIZE/2, cy = gy*CELL_SIZE + CELL_SIZE/2;
+      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, CELL_SIZE*2.4);
+      grad.addColorStop(0, 'rgba(255,150,40,0.18)');
+      grad.addColorStop(1, 'rgba(255,150,40,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(cx-CELL_SIZE*2.4, cy-CELL_SIZE*2.4, CELL_SIZE*4.8, CELL_SIZE*4.8);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  if (grid_visible) {
+    ctx.strokeStyle = GRID_COLOR;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i <= GRID_SIZE; i++) {
+      ctx.moveTo(0, i*CELL_SIZE); ctx.lineTo(CANVAS_SIZE, i*CELL_SIZE);
+      ctx.moveTo(i*CELL_SIZE, 0); ctx.lineTo(i*CELL_SIZE, CANVAS_SIZE);
+    }
+    ctx.stroke();
+  }
+
+  for (const p of particles) {
+    const a = Math.max(0, Math.min(255, Math.floor(255 * p.life / 22))) / 255;
+    ctx.fillStyle = `rgba(${p.col[0]},${p.col[1]},${p.col[2]},${a})`;
+    ctx.fillRect(p.x, p.y, 3, 3);
+  }
+
+  // ambient weather tint
+  if (weather === "rain") { ctx.fillStyle = "rgba(40,80,170,0.07)"; ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE); }
+  else if (weather === "snow") { ctx.fillStyle = "rgba(220,230,255,0.06)"; ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE); }
+
+  // lightning flash + bolt
+  if (lightningFlash > 0) {
+    const a = (lightningFlash / 5) * 0.22;
+    ctx.fillStyle = `rgba(230,240,255,${a})`;
+    ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+    if (lightningFlash >= 3 && lightningBoltX >= 0) {
+      ctx.strokeStyle = "rgba(235,245,255,0.9)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      let bx = lightningBoltX * CELL_SIZE + CELL_SIZE/2;
+      ctx.moveTo(bx, 0);
+      for (let yy = 0; yy < CANVAS_SIZE; yy += 18) {
+        bx += (Math.random() * 16 - 8);
+        ctx.lineTo(bx, yy);
+      }
+      ctx.stroke();
+    }
+  }
+
+  drawMissionsPanel();
+  drawToasts();
+
+  if (paused) {
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 20px Consolas";
+    ctx.textAlign = "center";
+    ctx.fillText("PAUSED", CANVAS_SIZE/2, CANVAS_SIZE/2);
+    ctx.textAlign = "left";
+  }
+
+  ctx.restore();
+  drawUI();
+}
+
+function drawMissionsPanel() {
+  if (!missionsVisible) return;
+  const pad = 10;
+  const lineH = 16;
+  const panelW = 210;
+  const panelH = pad * 2 + 18 + MISSIONS.length * lineH;
+  ctx.fillStyle = "rgba(20,18,14,0.62)";
+  roundRect(8, 8, panelW, panelH, 6); ctx.fill();
+  ctx.strokeStyle = "rgba(201,169,106,0.45)"; ctx.lineWidth = 1;
+  roundRect(8, 8, panelW, panelH, 6); ctx.stroke();
+
+  ctx.fillStyle = ACCENT;
+  ctx.font = "bold 12px Consolas";
+  const doneCount = completedMissions.size;
+  ctx.fillText(`MISSIONS  (${doneCount}/${MISSIONS.length})`, 8 + pad, 8 + pad + 10);
+
+  ctx.font = "12px Consolas";
+  MISSIONS.forEach((m, i) => {
+    const y = 8 + pad + 18 + i * lineH + 10;
+    const done = completedMissions.has(m.id);
+    ctx.fillStyle = done ? "rgb(150,210,140)" : "rgb(150,146,138)";
+    const mark = done ? "\u2713" : "\u25CB";
+    ctx.fillText(`${mark} ${m.label}`, 8 + pad, y);
+  });
+}
+
+function drawToasts() {
+  if (!toasts.length) return;
+  toasts.forEach((t, i) => {
+    const a = Math.min(1, t.life / 40) * Math.min(1, (t.maxLife - t.life) / 15 + 0.4);
+    const rise = (t.maxLife - t.life) * 0.3;
+    ctx.font = "bold 13px Consolas";
+    const tw = ctx.measureText(t.text).width;
+    const bx = CANVAS_SIZE/2 - tw/2 - 14;
+    const by = 16 + i * 30 - rise * 0;
+    ctx.fillStyle = `rgba(20,18,14,${0.75*a})`;
+    roundRect(bx, by, tw + 28, 24, 6); ctx.fill();
+    ctx.strokeStyle = `rgba(201,169,106,${0.8*a})`;
+    roundRect(bx, by, tw + 28, 24, 6); ctx.stroke();
+    ctx.fillStyle = `rgba(255,224,160,${a})`;
+    ctx.textAlign = "center";
+    ctx.fillText(t.text, CANVAS_SIZE/2, by + 16);
+    ctx.textAlign = "left";
+  });
+}
+
+function drawUI() {
+  ctx.fillStyle = PANEL_COLOR;
+  ctx.fillRect(0, CANVAS_SIZE, WIDTH, UI_HEIGHT);
+  ctx.strokeStyle = ACCENT; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, CANVAS_SIZE); ctx.lineTo(WIDTH, CANVAS_SIZE); ctx.stroke();
+
+  const x0 = 10, y0 = CANVAS_SIZE + 10, sw = 34;
+  for (const key in TOOLBAR_RECTS) delete TOOLBAR_RECTS[key];
+
+  TOOLBAR.forEach((e, i) => {
+    const col = i % 16;
+    const bx = x0 + col * (sw + 4);
+    const by = y0;
+    TOOLBAR_RECTS[e] = [bx, by, sw, sw];
+    const color = e !== EMPTY ? BASE_COLORS[e] : [60,20,20];
+    ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+    roundRect(bx, by, sw, sw, 6); ctx.fill();
+    ctx.lineWidth = e === current_element ? 3 : 1;
+    ctx.strokeStyle = e === current_element ? ACCENT : "rgb(80,80,85)";
+    roundRect(bx, by, sw, sw, 6); ctx.stroke();
+  });
+
+  const infoY = y0 + sw + 10;
+  ctx.fillStyle = ACCENT;
+  ctx.font = "14px Consolas";
+  ctx.fillText(`Selected: ${ELEMENT_NAMES[current_element]}   Size: ${size}   Brush: ${brush_round ? "Round" : "Square"}`, 10, infoY + 12);
+
+  // weather row
+  const wy = infoY + 46;
+  ctx.fillStyle = "rgb(160,156,145)";
+  ctx.fillText("Weather:", 10, wy + 16);
+  const weatherOpts = [["none","None"],["rain","Rain"],["snow","Snow"]];
+  let wx = 80;
+  for (const key in WEATHER_RECTS) delete WEATHER_RECTS[key];
+  for (const [key, label] of weatherOpts) {
+    ctx.font = "12px Consolas";
+    const w = ctx.measureText(label).width + 18;
+    const rect = [wx, wy, w, 22];
+    WEATHER_RECTS[key] = rect;
+    ctx.fillStyle = key === weather ? ACCENT : "rgb(40,38,32)";
+    roundRect(wx, wy, w, 22, 5); ctx.fill();
+    ctx.strokeStyle = "rgb(70,66,56)"; ctx.lineWidth = 1;
+    roundRect(wx, wy, w, 22, 5); ctx.stroke();
+    ctx.fillStyle = key === weather ? "rgb(20,18,14)" : "rgb(205,200,190)";
+    ctx.fillText(label, wx + 9, wy + 15);
+    wx += w + 6;
+  }
+
+  wx += 8;
+  const holdLabel = weatherLocked ? "\u23F8 Held" : "\u23F8 Hold";
+  ctx.font = "12px Consolas";
+  let bw = ctx.measureText(holdLabel).width + 18;
+  HOLD_RECT.x = wx; HOLD_RECT.y = wy; HOLD_RECT.w = bw; HOLD_RECT.h = 22;
+  ctx.fillStyle = weatherLocked ? ACCENT : "rgb(40,38,32)";
+  roundRect(wx, wy, bw, 22, 5); ctx.fill();
+  ctx.strokeStyle = "rgb(70,66,56)"; roundRect(wx, wy, bw, 22, 5); ctx.stroke();
+  ctx.fillStyle = weatherLocked ? "rgb(20,18,14)" : "rgb(205,200,190)";
+  ctx.fillText(holdLabel, wx + 9, wy + 15);
+  wx += bw + 6;
+
+  const cycleLabel = "\u21BB Cycle Now";
+  bw = ctx.measureText(cycleLabel).width + 18;
+  CYCLE_RECT.x = wx; CYCLE_RECT.y = wy; CYCLE_RECT.w = bw; CYCLE_RECT.h = 22;
+  ctx.fillStyle = "rgb(40,38,32)";
+  roundRect(wx, wy, bw, 22, 5); ctx.fill();
+  ctx.strokeStyle = "rgb(70,66,56)"; roundRect(wx, wy, bw, 22, 5); ctx.stroke();
+  ctx.fillStyle = "rgb(205,200,190)";
+  ctx.fillText(cycleLabel, wx + 9, wy + 15);
+
+  const fpsTxt = `FPS: ${Math.round(fps)}   Cells: ${countCells()}`;
+  ctx.fillStyle = "rgb(130,130,135)";
+  ctx.font = "12px Consolas";
+  const tw = ctx.measureText(fpsTxt).width;
+  ctx.fillText(fpsTxt, WIDTH - tw - 10, y0 + 12);
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y, x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r);
+  ctx.arcTo(x, y, x+w, y, r);
+  ctx.closePath();
+}
+
+function countCells() {
+  let c = 0;
+  for (let y = 0; y < GRID_SIZE; y++) for (let x = 0; x < GRID_SIZE; x++) if (grid[y][x] !== EMPTY) c++;
+  return c;
+}
+
+function toolbarHit(px, py) {
+  for (const e in TOOLBAR_RECTS) {
+    const [rx, ry, rw, rh] = TOOLBAR_RECTS[e];
+    if (px >= rx && px <= rx+rw && py >= ry && py <= ry+rh) return parseInt(e);
+  }
+  return null;
+}
+
+function weatherHit(px, py) {
+  for (const key in WEATHER_RECTS) {
+    const [rx, ry, rw, rh] = WEATHER_RECTS[key];
+    if (px >= rx && px <= rx+rw && py >= ry && py <= ry+rh) return key;
+  }
+  return null;
+}
+
+function inRect(px, py, r) { return px >= r.x && px <= r.x+r.w && py >= r.y && py <= r.y+r.h; }
+
+function controlsHit(px, py) {
+  if (inRect(px, py, HOLD_RECT)) return "hold";
+  if (inRect(px, py, CYCLE_RECT)) return "cycle";
+  return null;
+}
+
+function saveScreenshot() {
+  const link = document.getElementById('saveLink');
+  link.href = canvas.toDataURL('image/png');
+  link.download = `physix_save_${Date.now()}.png`;
+  link.click();
+}
+
+function clearGrid() {
+  for (let y = 0; y < GRID_SIZE; y++) for (let x = 0; x < GRID_SIZE; x++) clearCell(x, y);
+}
+
+// ================= INPUT =================
+let mouseDown = { left: false, right: false };
+let mousePos = { x: -1, y: -1 };
+
+function handlePointerDown(mx, my, erase) {
+  const hitTool = toolbarHit(mx, my);
+  const hitWeather = weatherHit(mx, my);
+  const hitControl = controlsHit(mx, my);
+  if (hitTool !== null) { current_element = hitTool; return; }
+  if (hitWeather !== null) { weather = hitWeather; return; }
+  if (hitControl === "hold") { weatherLocked = !weatherLocked; return; }
+  if (hitControl === "cycle") { cycleWeather(); weatherTimer = randomWeatherInterval(); return; }
+  mousePos.x = mx; mousePos.y = my;
+  if (erase) mouseDown.right = true; else mouseDown.left = true;
+}
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('mousedown', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+  const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+  handlePointerDown(mx, my, e.button === 2);
+});
+window.addEventListener('mouseup', e => {
+  if (e.button === 0) mouseDown.left = false;
+  if (e.button === 2) mouseDown.right = false;
+});
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  mousePos.x = (e.clientX - rect.left) * (canvas.width / rect.width);
+  mousePos.y = (e.clientY - rect.top) * (canvas.height / rect.height);
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  size = Math.max(1, Math.min(12, size - Math.sign(e.deltaY)));
+}, { passive: false });
+
+// ---- Touch support (tap toolbar/weather/controls, drag to paint) ----
+function touchToCanvasXY(touch) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (touch.clientX - rect.left) * (canvas.width / rect.width),
+    y: (touch.clientY - rect.top) * (canvas.height / rect.height)
+  };
+}
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  if (!t) return;
+  const { x, y } = touchToCanvasXY(t);
+  handlePointerDown(x, y, false);
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  if (!t) return;
+  const { x, y } = touchToCanvasXY(t);
+  mousePos.x = x; mousePos.y = y;
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  mouseDown.left = false;
+  mouseDown.right = false;
+}, { passive: false });
+canvas.addEventListener('touchcancel', e => {
+  mouseDown.left = false;
+  mouseDown.right = false;
+});
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (HOTKEYS.hasOwnProperty(k)) { current_element = HOTKEYS[k]; return; }
+  if (k === 'g') grid_visible = !grid_visible;
+  else if (k === 'c') clearGrid();
+  else if (k === ' ') { paused = !paused; e.preventDefault(); }
+  else if (k === 's') saveScreenshot();
+  else if (k === 'r') brush_round = !brush_round;
+  else if (k === '=' || k === '+') size = Math.min(12, size+1);
+  else if (k === '-' || k === '_') size = Math.max(1, size-1);
+  else if (k === 'm') missionsVisible = !missionsVisible;
+  else if (k === 'w') {
+    const order = ["none","rain","snow"];
+    weather = order[(order.indexOf(weather)+1) % order.length];
+  }
+});
+
+function paintAt(mx, my, erase) {
+  if (my >= CANVAS_SIZE) return;
+  if (toolbarHit(mx, my) !== null || weatherHit(mx, my) !== null) return;
+  const gx = Math.floor(mx / CELL_SIZE), gy = Math.floor(my / CELL_SIZE);
+  const elemToPlace = erase ? EMPTY : current_element;
+  for (let dy = -size+1; dy < size; dy++) {
+    for (let dx = -size+1; dx < size; dx++) {
+      if (brush_round && (dx*dx + dy*dy) > size*size) continue;
+      const x = gx+dx, y = gy+dy;
+      if (inBounds(x, y)) {
+        if (elemToPlace === EMPTY) clearCell(x, y);
+        else place(x, y, elemToPlace, elemToPlace === FIRE ? Math.floor(Math.random()*26)+20 : 0);
+      }
+    }
+  }
+}
+
+// ================= MAIN LOOP =================
+function update() {
+  frame++;
+
+  if (mouseDown.left || mouseDown.right) {
+    paintAt(mousePos.x, mousePos.y, mouseDown.right);
+  }
+
+  if (!paused) {
+    weatherTimer -= 1;
+    if (!weatherLocked && weatherTimer <= 0) { cycleWeather(); weatherTimer = randomWeatherInterval(); }
+    spawnWeather();
+    maybeStrikeLightning();
+    if (lightningFlash > 0) lightningFlash -= 1;
+
+    windPhase += 0.004;
+    wind = Math.sin(windPhase) * 0.6 + Math.sin(windPhase * 2.7) * 0.3;
+
+    for (const row of updated) row.fill(false);
+
+    for (let y = GRID_SIZE - 1; y >= 0; y--) {
+      const xs = [];
+      for (let x = 0; x < GRID_SIZE; x++) xs.push(x);
+      if (frame % 2 === 0) xs.reverse();
+      for (const x of xs) {
+        if (updated[y][x]) continue;
+        let e = grid[y][x];
+        if (burning[y][x]) {
+          handleBurning(x, y);
+          e = grid[y][x];
+          if (updated[y][x]) continue;
+        }
+        const fn = UPDATERS[e];
+        if (fn) fn(x, y);
+      }
+    }
+
+    const newParticles = [];
+    for (const p of particles) {
+      p.x += p.vx; p.y += p.vy; p.vy += 0.06; p.life -= 1;
+      if (p.life > 0) newParticles.push(p);
+    }
+    particles = newParticles;
+
+    checkMissions();
+    toasts = toasts.filter(t => (t.life -= 1) > 0);
+  }
+
+  draw();
+
+  const now = performance.now();
+  const dt = now - lastTime;
+  lastTime = now;
+  if (dt > 0) fps = fps * 0.9 + (1000 / dt) * 0.1;
+
+  requestAnimationFrame(update);
+}
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>
